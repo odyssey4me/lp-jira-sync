@@ -1,0 +1,12 @@
+pbr>=1.6
+
+click
+mongoengine
+pymongo
+python-dateutil
+pytz
+PyYAML
+requests
+#requests-futures
+simplejson
+six
