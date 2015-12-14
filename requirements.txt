@@ -1,12 +1,12 @@
 pbr>=1.6
 
 click
-mongoengine
+jira
+launchpadlib
 pymongo
 python-dateutil
 pytz
 PyYAML
 requests
-#requests-futures
 simplejson
 six

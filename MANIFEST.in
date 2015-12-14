@@ -2,7 +2,6 @@ include AUTHORS
 include ChangeLog
 include MANIFEST.in setup.py setup.cfg
 include README.rst
-include sync.py
 include tox.ini
 include requirements.txt
 include test-requirements.txt

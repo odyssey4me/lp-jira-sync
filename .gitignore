@@ -25,3 +25,6 @@ coverage.xml
 
 # Pycharm
 .idea
+
+# Project-specific
+etc/*.conf
