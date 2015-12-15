@@ -1,8 +1,19 @@
 import ConfigParser
+import logging
 import os
+import sys
 
 
-def parse_config():
+def configure_logging():
+    logging_format = ("[%(asctime)s] - %(name)s - %(levelname)s - "
+                      "%(message)s")
+    logging.basicConfig(stream=sys.stdout,
+                        level=logging.DEBUG,
+                        format=logging_format)
+    logging.getLogger("requests").setLevel(logging.ERROR)
+
+
+def _parse_config():
     config = ConfigParser.ConfigParser()
     filenames = [
         '/etc/lp_jira_sync.conf',
@@ -12,4 +23,5 @@ def parse_config():
     config.read(filenames)
     return config
 
-settings = parse_config()
+
+settings = _parse_config()

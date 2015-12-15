@@ -1,25 +1,14 @@
-import logging
 import sys
 
 import click
 
+from config import settings
 from lp_jira_sync.cmd import sync_bugs
-
-log = logging.getLogger(__name__)
-
-
-def configure_logging():
-    logging_format = ("[%(asctime)s] - %(name)s - %(levelname)s - "
-                      "%(message)s")
-    logging.basicConfig(stream=sys.stdout,
-                        level=logging.DEBUG,
-                        format=logging_format)
-    logging.getLogger("requests").setLevel(logging.ERROR)
 
 
 @click.group()
 def cli():
-    configure_logging()
+    settings.configure_logging()
 
 
 @cli.command('sync-bugs')
