@@ -2,13 +2,13 @@ import sys
 
 import click
 
-from config import settings
+import config
 from lp_jira_sync.cmd import sync_bugs
 
 
 @click.group()
 def cli():
-    settings.configure_logging()
+    config.configure_logging()
 
 
 @cli.command('sync-bugs')
