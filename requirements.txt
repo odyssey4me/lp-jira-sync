@@ -6,7 +6,5 @@ launchpadlib
 pymongo
 python-dateutil
 pytz
-PyYAML
 requests
 simplejson
-six

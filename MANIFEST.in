@@ -1,10 +1,10 @@
 include AUTHORS
 include ChangeLog
 include MANIFEST.in setup.py setup.cfg
+include pylint
 include README.rst
-include tox.ini
 include requirements.txt
 include test-requirements.txt
-include pylint
+include tox.ini
 
 global-exclude *.pyc

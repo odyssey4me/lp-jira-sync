@@ -1,5 +1,8 @@
 from pymongo import MongoClient
 
-client = MongoClient('mongodb://localhost:27017/')
+from config import settings
+
+client = MongoClient(host=settings.get('DB', 'host'),
+                     port=settings.getint('DB', 'port'))
 
 db = client['lp_jira_sync']
