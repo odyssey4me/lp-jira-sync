@@ -1,10 +1,2 @@
-include AUTHORS
-include ChangeLog
-include MANIFEST.in setup.py setup.cfg
-include pylint
-include README.rst
-include requirements.txt
-include test-requirements.txt
-include tox.ini
-
-global-exclude *.pyc
+exclude lp_jira_sync/*.conf
+prune shared

@@ -28,3 +28,4 @@ coverage.xml
 
 # Project-specific
 etc/*.conf
+shared/

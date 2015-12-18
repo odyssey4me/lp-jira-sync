@@ -1,10 +1,7 @@
 pbr>=1.6
 
-click
 jira
 launchpadlib
-pymongo
 python-dateutil
 pytz
-requests
 simplejson
