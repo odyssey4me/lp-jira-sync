@@ -27,5 +27,5 @@ coverage.xml
 .idea
 
 # Project-specific
-etc/*.conf
+lp_jira_sync/*.conf
 shared/
