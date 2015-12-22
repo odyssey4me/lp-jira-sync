@@ -1,0 +1,9 @@
+[JIRA]
+url = https://mirantis.jira.com/
+user = user
+password = password
+project_key = QA
+
+[LP]
+projects = ["fuel", "mos"]
+milestones = ["4.1.1-updates", "5.0-updates", "5.1.1-updates", "6.0-updates", "6.1-updates", "7.0-updates", "8.0-updates"]

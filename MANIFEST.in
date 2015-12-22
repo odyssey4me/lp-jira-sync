@@ -1,2 +1,1 @@
-exclude lp_jira_sync/*.conf
-prune shared
+exclude *.conf
