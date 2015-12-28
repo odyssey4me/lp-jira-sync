@@ -10,7 +10,9 @@ import httplib2
 import json
 import logging
 import os
+import Queue
 import six
+import threading
 
 from jira.client import JIRA
 from launchpadlib.errors import HTTPError
@@ -79,6 +81,14 @@ class Client(object):
     def get_bugs(self, **kwargs):
         pass
 
+    @abstractmethod
+    def create_bug(self, bug, **kwargs):
+        pass
+
+    @abstractmethod
+    def update_bug(self, bug, **kwargs):
+        pass
+
 
 class LpClient(Client):
     status_mapping = {
@@ -136,8 +146,7 @@ class LpClient(Client):
         log.info('Retrieving milestone "%s" from Launchpad.', self.milestone)
         milestone = project.getMilestone(name=self.milestone)
         if milestone:
-            log.info('Retrieving bugs for milestone "%s" from Launchpad.',
-                     self.milestone)
+            log.info('Retrieving bugs from Launchpad.')
             bug_tasks = milestone.searchTasks(**kwargs)
             log.info('Found %s bugs on Launchpad.', len(bug_tasks))
 
@@ -152,7 +161,7 @@ class LpClient(Client):
 
     def process_bug(self, task):
         bug = task.bug
-        res = {
+        bug_info = {
             'id': str(bug.id),
             'title': self.get_str(bug.title),
             'description': self.get_str(bug.description),
@@ -170,7 +179,13 @@ class LpClient(Client):
         #    version = self.get_str(bug.linked_branches.entries[0])
         #    bug.update({'fix_version': version})
 
-        return res
+        return bug_info
+
+    def create_bug(self, bug, **kwargs):
+        pass
+
+    def update_bug(self, bug, **kwargs):
+        pass
 
 
 class JiraClient(Client):
@@ -197,85 +212,113 @@ class JiraClient(Client):
                     options={'server': config.get('JIRA', 'url')})
 
     def get_bugs(self, **kwargs):
-        issues_count = 900000
-        issue_fields = 'key,summary,description,issuetype,' + \
-                       'priority,status,updated,comment,fixVersions'
+        issues_count = 90000
+        issue_fields = ','.join([
+            'key', 'summary', 'description', 'issuetype', 'priority',
+            'status', 'updated', 'comment', 'fixVersions'])
+        # TODO tags
+        search_string = 'project={0} and issuetype=Bug'.format(
+            config.get('JIRA', 'project_key'), self.project)
 
-        search_string = 'project={0} and issuetype=Bug'.format(self.project)
-        issues = self.client.search_issues(search_string, fields=issue_fields,
-                                    maxResults=issues_count)
+        log.info('Retrieving bugs from JIRA.')
+        issues = self.client.search_issues(search_string,
+                                           fields=issue_fields,
+                                           maxResults=issues_count)
+        log.info('Found %s bugs on JIRA.', len(issues))
+
         bugs = []
         for issue in issues:
-            bug = {
-                'key': self.get_str(issue.key),
-                'title': self.get_str(issue.fields.summary),
-                'description': self.get_str(issue.fields.description),
-                'priority': self.get_str(issue.fields.priority.name),
-                'status': self.get_str(issue.fields.status.name),
-                'updated': self.get_date(issue.fields.updated),
-                'comments': issue.fields.comment.comments,
-                'fix_version': '',
-            }
+            bugs.append(self.process_bug(issue))
 
-            if issue.fields.fixVersions:
-                version = self.get_str(issue.fields.fixVersions[0].name)
-                bug.update({'fix_version': version})
-
-            summary = bug['title']
-            if 'Launchpad Bug' in summary:
-                summary = summary[24:]
-
-            bug.update({'priority_code': bug['priority']['code'],
-                        'status_code': bug['status']['code'],
-                        'summary': summary})
-
-            bugs.append(bug)
-
-        print 'Found ' + str(len(bugs)) + ' bugs in JIRA'
         return bugs
 
     def process_bug(self, issue):
-        bug = task.bug
-        res = {
-            'id': str(bug.id),
-            'title': self.get_str(bug.title),
-            'description': self.get_str(bug.description),
-            'tags': [str(tag) for tag in bug.tags],
-            'priority': str(task.importance),
-            'status': str(task.status),
-            # 'created': bug.date_created,  # TODO
-            # 'updated': bug.date_last_updated,
-            # 'comments': bug.messages.entries[1:],
-            # 'attachments': bug.attachments.entries,
-            # 'fix_version': '',
+        bug = {
+            'key': self.get_str(issue.key),
+            'title': self.get_str(issue.fields.summary),
+            'description': self.get_str(issue.fields.description),
+            'priority': self.get_str(issue.fields.priority.name),
+            'status': self.get_str(issue.fields.status.name),
+            'updated': self.get_date(issue.fields.updated),
+            'comments': issue.fields.comment.comments,
+            'fix_version': '',
         }
 
-        # if bug.linked_branches.entries:
-        #    version = self.get_str(bug.linked_branches.entries[0])
-        #    bug.update({'fix_version': version})
+        if issue.fields.fixVersions:
+            version = self.get_str(issue.fields.fixVersions[0].name)
+            bug.update({'fix_version': version})
 
-        return res
+        summary = bug['title']
+        if 'Launchpad Bug' in summary:
+            summary = summary[24:]
+
+        bug.update({'priority_code': bug['priority']['code'],
+                    'status_code': bug['status']['code'],
+                    'summary': summary})
+        return bug
+
+    def create_bug(self, bug, **kwargs):
+        title = kwargs.get('title')
+        project_key = kwargs.get('project_key')
+        description = kwargs.get('description')
+
+        fields = {
+            'project': {
+                'key': project_key
+            },
+            'summary': title,
+            'description': description,
+            'issuetype': {
+                'name': 'Bug'
+            }
+        }
+
+        log.info('Creating new bug on JIRA: "%s"', title)
+        try:
+            new_issue = self.client.create_issue(fields=fields)
+        except Exception as e:
+            log.error('Updating bug failed on JIRA: "%s"', title)
+            raise e
+        else:
+            log.info('Bug was successfully created on JIRA: "%s"', title)
+        return new_issue
+
+    def update_bug(self, bug, **kwargs):
+        title = kwargs.get('title')
+        new_status = kwargs.pop('new_status')
+        new_status_id = None
+
+        log.info('Updating bug on JIRA: "%s"', title)
+        try:
+            bug.update(**kwargs)
+
+            for status in self.client.transitions(bug):
+                if self.get_str(status['name']) == new_status:
+                    new_status_id = status['id']
+
+            self.client.transition_issue(
+                bug, new_status_id,
+                comment='Automatically updated by script.')
+        except Exception as e:
+            log.error('Updating bug failed on JIRA: "%s"', title)
+            raise e
+        else:
+            log.info('Bug was successfully updated on JIRA: "%s"', title)
 
 
 def sync_jira_with_launchpad(project, milestone):
     log.info('Syncing for "%s" project, "%s" milestone.', project, milestone)
 
-    jira_client = JiraClient(project, milestone)
+    # jira_client = JiraClient(project, milestone)
     lp_client = LpClient(project, milestone)
 
     # Sync already created tasks
-    # jira_bugs = jira_client.get_bugs(statuses=[])
-    # launchpad_bugs = lp_client.get_bugs(status=lp_client.not_completed_status)
+    # jira_bugs = jira_client.get_bugs(status=[])
+    launchpad_bugs = lp_client.get_bugs(status=lp_client.not_completed_status)
 
     # TODO: Move new bugs from Launchpad to JIRA
-    # jira_bugs = jira_client.get_bugs()
-    # launchpad_bugs = lp_client.get_bugs(statuses=[
-    #     'New', 'Confirmed', 'Triaged'])
 
     # TODO: Move new milestones from JIRA to Launchpad
-    # jira_bugs = jira_client.get_bugs()
-    # launchpad_bugs = lp_client.get_bugs(statuses=[
-    #     'New', 'Confirmed', 'Triaged', 'In Progress','Fix Committed'])
 
 
 def main():
@@ -283,6 +326,7 @@ def main():
 
     for project in json.loads(config.get('LP', 'projects')):
         for milestone in json.loads(config.get('LP', 'milestones')):
+            # TODO threading
             sync_jira_with_launchpad(project, milestone)
     log.info('Successfully synced.')
 
