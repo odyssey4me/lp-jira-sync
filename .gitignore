@@ -23,7 +23,7 @@ nosetests.xml
 coverage.xml
 *,cover
 
-# Pycharm
+# IDEs
 .idea
 
 # Project-specific

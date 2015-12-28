@@ -5,3 +5,4 @@ launchpadlib
 python-dateutil
 pytz
 simplejson
+six
