@@ -3,14 +3,12 @@ from __future__ import unicode_literals
 
 from abc import ABCMeta
 from abc import abstractmethod
-from collections import OrderedDict
 import ConfigParser
 from dateutil import parser
 import httplib2
 import json
 import logging
 import os
-import Queue
 import six
 import threading
 
@@ -55,9 +53,7 @@ config = setup_config()
 
 @six.add_metaclass(ABCMeta)
 class Client(object):
-    def __init__(self, project, milestone):
-        self.project = project
-        self.milestone = milestone
+    def __init__(self):
         self.client = self.authenticate()
 
     @staticmethod
@@ -75,10 +71,6 @@ class Client(object):
 
     @abstractmethod
     def authenticate(self):
-        pass
-
-    @abstractmethod
-    def get_bugs(self, **kwargs):
         pass
 
     @abstractmethod
@@ -109,9 +101,6 @@ class LpClient(Client):
         'Undecided': '',
     }
 
-    not_completed_status = ['New', 'Incomplete', 'Confirmed', 'Triaged',
-                            'In Progress', 'Fix Committed']
-
     def authenticate(self):
         try:
             launchpad = Launchpad.login_with(
@@ -126,40 +115,43 @@ class LpClient(Client):
             raise e
         return launchpad
 
-    def get_bugs(self, **kwargs):
+    def get_bugs(self, project_name, milestone_name, **kwargs):
         bugs = []
         try:
-            try:
-                project = self.client.projects[self.project]
-            except KeyError:
-                log.error("Project \"%s\" wasn't found on Launchpad. "
-                          "Skipped.", self.project)
-            else:
-                bugs = self.process_project_milestone(project, **kwargs)
+            log.info('Retrieving "%s" project from Launchpad.', milestone_name)
+            project = self.client.projects[project_name]
+        except KeyError:
+            log.error("\"%s\" project wasn't found on Launchpad. "
+                      "Skipped.", project_name)
         except HTTPError as e:
             log.error(e.content)
+        else:
+            bugs = self.process_project_milestone(project, milestone_name,
+                                                  **kwargs)
         return bugs
 
-    def process_project_milestone(self, project, **kwargs):
+    def process_project_milestone(self, project, milestone_name, **kwargs):
         bugs_list = []
 
-        log.info('Retrieving milestone "%s" from Launchpad.', self.milestone)
-        milestone = project.getMilestone(name=self.milestone)
+        milestone = project.getMilestone(name=milestone_name)
         if milestone:
-            log.info('Retrieving bugs from Launchpad.')
+            log.info('Retrieving bugs for "%s" project, "%s" milestone from '
+                     'Launchpad.', project.name, milestone_name)
             bug_tasks = milestone.searchTasks(**kwargs)
-            log.info('Found %s bugs on Launchpad.', len(bug_tasks))
+            log.info(
+                'Found %s bugs for "%s" project, "%s" milestone on Launchpad.',
+                len(bug_tasks), project.name, milestone_name)
 
             for task in bug_tasks:
                 bugs_list.append(self.process_bug(task))
         else:
-            log.error(
-                "Closed milestone \"%s\" wasn't found on Launchpad. Skipped.",
-                self.milestone)
+            log.error("Closed \"%s\" milestone wasn't found on Launchpad. "
+                      "Skipped.", milestone_name)
 
         return bugs_list
 
     def process_bug(self, task):
+        # TODO
         bug = task.bug
         bug_info = {
             'id': str(bug.id),
@@ -211,14 +203,14 @@ class JiraClient(Client):
                                 config.get('JIRA', 'password')),
                     options={'server': config.get('JIRA', 'url')})
 
-    def get_bugs(self, **kwargs):
+    def get_bugs(self):
         issues_count = 90000
         issue_fields = ','.join([
             'key', 'summary', 'description', 'issuetype', 'priority',
             'status', 'updated', 'comment', 'fixVersions'])
         # TODO tags
         search_string = 'project={0} and issuetype=Bug'.format(
-            config.get('JIRA', 'project_key'), self.project)
+            config.get('JIRA', 'project_key'))
 
         log.info('Retrieving bugs from JIRA.')
         issues = self.client.search_issues(search_string,
@@ -306,28 +298,47 @@ class JiraClient(Client):
             log.info('Bug was successfully updated on JIRA: "%s"', title)
 
 
-def sync_jira_with_launchpad(project, milestone):
-    log.info('Syncing for "%s" project, "%s" milestone.', project, milestone)
+class ThreadSync(threading.Thread):
+    def __init__(self, project, milestone, *args, **kwargs):
+        super(ThreadSync, self).__init__(*args, **kwargs)
+        self.project = project
+        self.milestone = milestone
 
-    # jira_client = JiraClient(project, milestone)
-    lp_client = LpClient(project, milestone)
+    def run(self):
+        log.info('Syncing for "%s" project, "%s" milestone.',
+                 self.project, self.milestone)
 
-    # Sync already created tasks
-    # jira_bugs = jira_client.get_bugs(status=[])
-    launchpad_bugs = lp_client.get_bugs(status=lp_client.not_completed_status)
+        jira_client = None
+        lp_client = LpClient()
+        import ipdb; ipdb.set_trace()
 
-    # TODO: Move new bugs from Launchpad to JIRA
+        # Sync already created tasks
+        # jira_bugs = jira_client.get_bugs(status=[])
+        lp_bugs = lp_client.get_bugs(
+            self.project, self.milestone,
+            status=json.loads(config.get('LP', 'statuses')))
 
-    # TODO: Move new milestones from JIRA to Launchpad
+        # TODO: Move new bugs from Launchpad to JIRA
+
+        # TODO: Move new milestones from JIRA to Launchpad
 
 
 def main():
     log.info('Starting to sync.')
 
+    threads = []
     for project in json.loads(config.get('LP', 'projects')):
         for milestone in json.loads(config.get('LP', 'milestones')):
-            # TODO threading
-            sync_jira_with_launchpad(project, milestone)
+            th = ThreadSync(project, milestone)
+            th.setDaemon(True)
+            threads.append(th)
+
+    for th in threads:
+        th.start()
+
+    for th in threads:
+        th.join()
+
     log.info('Successfully synced.')
 
 
