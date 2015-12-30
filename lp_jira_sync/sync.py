@@ -74,11 +74,11 @@ class Client(object):
         pass
 
     @abstractmethod
-    def create_bug(self, bug, **kwargs):
+    def create_bug(self, bug, data):
         pass
 
     @abstractmethod
-    def update_bug(self, bug, **kwargs):
+    def update_bug(self, bug, data):
         pass
 
 
@@ -173,11 +173,38 @@ class LpClient(Client):
 
         return bug_info
 
-    def create_bug(self, bug, **kwargs):
-        pass
+    def create_bug(self, bug, data):
+        new_bug = None
+        title = data.get('title')
 
-    def update_bug(self, bug, **kwargs):
-        pass
+        log.info('Creating new bug on Launchpad: "%s"', title)
+        try:
+            new_bug = self.client.bugs.createBug(**data)
+        except Exception as e:
+            log.error('Updating bug failed on Launchpad: "%s"', title)
+            raise e
+        else:
+            log.info('Bug was successfully created on Launchpad: "%s"', title)
+        return new_bug
+
+    def update_bug(self, bug, data):
+        title = data.get('title')
+
+        log.info('Updating bug on Launchpad: "%s"', title)
+        try:
+            bug.title = title
+            bug.description = data.get('description')
+            bug.lp_save()
+
+            bug_task = bug.bug_tasks[0]
+            bug_task.status = data.get('status')
+            bug_task.importance = data.get('priority')
+            bug_task.lp_save()
+        except Exception as e:
+            log.error('Updating bug failed on Launchpad: "%s"', title)
+            raise e
+        else:
+            log.info('Bug was successfully updated on Launchpad: "%s"', title)
 
 
 class JiraClient(Client):
@@ -249,17 +276,14 @@ class JiraClient(Client):
                     'summary': summary})
         return bug
 
-    def create_bug(self, bug, **kwargs):
-        title = kwargs.get('title')
-        project_key = kwargs.get('project_key')
-        description = kwargs.get('description')
-
+    def create_bug(self, bug, data):
+        title = data.get('title')
         fields = {
             'project': {
-                'key': project_key
+                'key': data.get('project_key')
             },
             'summary': title,
-            'description': description,
+            'description': data.get('description'),
             'issuetype': {
                 'name': 'Bug'
             }
@@ -275,17 +299,16 @@ class JiraClient(Client):
             log.info('Bug was successfully created on JIRA: "%s"', title)
         return new_issue
 
-    def update_bug(self, bug, **kwargs):
-        title = kwargs.get('title')
-        new_status = kwargs.pop('new_status')
+    def update_bug(self, bug, data):
+        title = data.get('title')
         new_status_id = None
 
         log.info('Updating bug on JIRA: "%s"', title)
         try:
-            bug.update(**kwargs)
+            bug.update(**data)
 
             for status in self.client.transitions(bug):
-                if self.get_str(status['name']) == new_status:
+                if self.get_str(status['name']) == data.pop('new_status'):
                     new_status_id = status['id']
 
             self.client.transition_issue(
