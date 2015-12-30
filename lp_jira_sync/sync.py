@@ -10,10 +10,12 @@ import json
 import logging
 import os
 import six
+import sys
 import threading
 
 from jira.client import JIRA
-from launchpadlib.errors import HTTPError
+from jira.exceptions import JIRAError
+from launchpadlib.errors import HTTPError as LPError
 from launchpadlib.launchpad import Launchpad
 from launchpadlib import uris
 
@@ -110,9 +112,9 @@ class LpClient(Client):
                 credentials_file=LP_CREDENTIALS_FILE,
                 version=LP_API_VERSION,
             )
-        except HTTPError as e:
+        except LPError as e:
             log.error(e.content)
-            raise e
+            sys.exit(1)
         return launchpad
 
     def get_bugs(self, project_name, milestone_name, **kwargs):
@@ -123,7 +125,7 @@ class LpClient(Client):
         except KeyError:
             log.error("\"%s\" project wasn't found on Launchpad. "
                       "Skipped.", project_name)
-        except HTTPError as e:
+        except LPError as e:
             log.error(e.content)
         else:
             bugs = self.process_project_milestone(project, milestone_name,
@@ -226,11 +228,17 @@ class JiraClient(Client):
     }
 
     def authenticate(self):
-        return JIRA(basic_auth=(config.get('JIRA', 'user'),
-                                config.get('JIRA', 'password')),
-                    options={'server': config.get('JIRA', 'url')})
+        try:
+            jira = JIRA(basic_auth=(config.get('JIRA', 'user'),
+                                    config.get('JIRA', 'password')),
+                        options={'server': config.get('JIRA', 'url')})
+        except JIRAError as e:
+            log.error('JIRA connection error. %s (%s)', e.url, e.status_code)
+            sys.exit(1)
+        return jira
 
     def get_bugs(self):
+        issues = []
         issues_count = 90000
         issue_fields = ','.join([
             'key', 'summary', 'description', 'issuetype', 'priority',
@@ -240,9 +248,13 @@ class JiraClient(Client):
             config.get('JIRA', 'project_key'))
 
         log.info('Retrieving bugs from JIRA.')
-        issues = self.client.search_issues(search_string,
-                                           fields=issue_fields,
-                                           maxResults=issues_count)
+        try:
+            issues = self.client.search_issues(search_string,
+                                               fields=issue_fields,
+                                               maxResults=issues_count)
+        except JIRAError as e:
+            log.error('JIRA error. %s (%s)', e.url, e.status_code)
+
         log.info('Found %s bugs on JIRA.', len(issues))
 
         bugs = []
@@ -277,6 +289,7 @@ class JiraClient(Client):
         return bug
 
     def create_bug(self, bug, data):
+        new_issue = None
         title = data.get('title')
         fields = {
             'project': {
@@ -292,9 +305,9 @@ class JiraClient(Client):
         log.info('Creating new bug on JIRA: "%s"', title)
         try:
             new_issue = self.client.create_issue(fields=fields)
-        except Exception as e:
-            log.error('Updating bug failed on JIRA: "%s"', title)
-            raise e
+        except JIRAError as e:
+            log.error('Updating bug failed on JIRA: %s (%s)', e.url,
+                      e.status_code)
         else:
             log.info('Bug was successfully created on JIRA: "%s"', title)
         return new_issue
@@ -314,36 +327,45 @@ class JiraClient(Client):
             self.client.transition_issue(
                 bug, new_status_id,
                 comment='Automatically updated by script.')
-        except Exception as e:
-            log.error('Updating bug failed on JIRA: "%s"', title)
+        except JIRAError as e:
+            log.error('Updating bug failed on JIRA: %s (%s)', title)
             raise e
         else:
             log.info('Bug was successfully updated on JIRA: "%s"', title)
 
 
 class ThreadSync(threading.Thread):
-    def __init__(self, project, milestone, *args, **kwargs):
+    def __init__(self, project, milestone, jira_client, lp_client,
+                 *args, **kwargs):
         super(ThreadSync, self).__init__(*args, **kwargs)
         self.project = project
         self.milestone = milestone
+        self.jira_client = jira_client
+        self.lp_client = lp_client
 
     def run(self):
+        """Run bugs synchronization."""
         log.info('Syncing for "%s" project, "%s" milestone.',
                  self.project, self.milestone)
 
-        jira_client = None
-        lp_client = LpClient()
-        import ipdb; ipdb.set_trace()
+        self.sync_created()
+        self.move_bugs_from_lp_to_jira()
+        self.move_milestones_from_jira()
 
-        # Sync already created tasks
-        # jira_bugs = jira_client.get_bugs(status=[])
-        lp_bugs = lp_client.get_bugs(
-            self.project, self.milestone,
-            status=json.loads(config.get('LP', 'statuses')))
+    def sync_created(self):
+        """Sync already created tasks."""
+        # jira_bugs = self.jira_client.get_bugs(status=[])
+        # lp_bugs = self.lp_client.get_bugs(
+        #     self.project, self.milestone,
+        #     status=json.loads(config.get('LP', 'statuses')))
 
-        # TODO: Move new bugs from Launchpad to JIRA
+    def move_bugs_from_lp_to_jira(self):
+        """Move new bugs from Launchpad to JIRA."""
+        pass
 
-        # TODO: Move new milestones from JIRA to Launchpad
+    def move_milestones_from_jira(self):
+        """Move new milestones from JIRA to Launchpad."""
+        pass
 
 
 def main():
@@ -352,7 +374,7 @@ def main():
     threads = []
     for project in json.loads(config.get('LP', 'projects')):
         for milestone in json.loads(config.get('LP', 'milestones')):
-            th = ThreadSync(project, milestone)
+            th = ThreadSync(project, milestone, JiraClient(), JiraClient())
             th.setDaemon(True)
             threads.append(th)
 
