@@ -3,6 +3,3 @@ pbr>=1.6
 jira
 launchpadlib
 python-dateutil
-pytz
-simplejson
-six

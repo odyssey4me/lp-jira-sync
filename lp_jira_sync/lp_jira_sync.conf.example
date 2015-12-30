@@ -2,8 +2,21 @@
 url = https://mirantis.jira.com/
 user = user
 password = password
-project_key = QA
+
+# Mapping with the corresponding values of projects in the LP section
+projects = {"fuel": "QA", "mos": "QA"}
 
 [LP]
+# LP projects for sync
 projects = ["fuel", "mos"]
+
+# LP milestones for sync
 milestones = ["4.1.1-updates", "5.0-updates", "5.1.1-updates", "6.0-updates", "6.1-updates", "7.0-updates", "8.0-updates"]
+
+# Only the bugs with this statuses will be synced. By default, the active statuses:
+# "New", "Incomplete", "Confirmed", "Triaged", "In Progress", "Fix Committed"
+sync_statuses = ["New", "Incomplete", "Confirmed", "Triaged", "In Progress", "Fix Committed"]
+
+# Only the bugs with this statuses will be exported to JIRA. By default:
+# "New", "Incomplete", "Confirmed", "Triaged"
+export_statuses = ["New", "Incomplete", "Confirmed", "Triaged"]
