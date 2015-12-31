@@ -57,6 +57,10 @@ log = setup_logger()
 
 config = setup_config()
 
+# TODO(rsalin): export Bug Owner (Issue Reporter) from LP to JIRA
+# TODO(rsalin): sync Attachments
+# TODO(rsalin): export Comments from LP to JIRA
+
 
 class Client(object):
     __metaclass__ = ABCMeta
@@ -167,9 +171,6 @@ class LpClient(Client):
 
     def process_bug(self, task):
         bug = task.bug
-
-        # TODO(rsalin): does it necessary to export owner (reporter)?
-        # TODO(rsalin): export attachments
         # owner = None
         # try:
         #     owner = bug.owner.preferred_email_address.email
@@ -352,9 +353,9 @@ class JiraClient(Client):
             log.info('Bug was successfully updated on JIRA: "%s"', title)
 
 
-class ThreadSyncBugs(threading.Thread):
+class ThreadSync(threading.Thread):
     def __init__(self, project, milestone, jira, lp):
-        super(ThreadSyncBugs, self).__init__()
+        super(ThreadSync, self).__init__()
 
         self.project = project
         self.milestone = milestone
@@ -372,18 +373,20 @@ class ThreadSyncBugs(threading.Thread):
             log.warn('Dry run mode active. No changes will be performed.')
             log.warn(40 * '-')
 
-        # self.sync_created_bugs()
+        self.sync_created_bugs()
         self.move_bugs_from_lp_to_jira()
-        self.create_maintenance_milestones()
-        self.update_release_milestone()
 
     @staticmethod
     def is_bugs_match(lbug, jbug):
-        return (lbug['title'] in jbug['title'] or
-                lbug['key'] in jbug['title'])
+        return lbug['title'] in jbug['title'] or lbug['key'] in jbug['title']
 
     def sync_created_bugs(self):
         """Sync already created tasks."""
+        # TODO(rsalin): move bugs to the maintenance milestone.
+        # When and how it should be done?
+        # TODO(rsalin): update the release date of milestone in LP after
+        # the release in JIRA
+
         jira_bugs = self.jira.get_bugs(self.jira_project, self.milestone)
         lp_bugs = self.lp.get_bugs(
             self.project, self.milestone,
@@ -394,33 +397,36 @@ class ThreadSyncBugs(threading.Thread):
                 if not self.is_bugs_match(lbug, jbug):
                     continue
 
-                for param in ['summary', 'description', 'tags', 'status_code',
-                              'priority_code']:
+                # TODO update resolvers
+                for param in ['summary', 'description', 'tags']:
                     if jbug[param] == lbug[param]:
                         continue
 
                     # Changed in LP
                     if jbug['updated'] < lbug['updated']:
+                        new_title = lbug['title']
+                        if lbug['key'] not in jbug['title']:
+                            new_title = '{0}{1}'.format(
+                                JiraClient.summary_prefix.format(lbug['key']),
+                                new_title)
 
-                        new_title = ''
-                        if not lbug['key'] in jbug['title']:
-                            new_title = JiraClient.summary_prefix.format(
-                                lbug['key'])
-                        new_title += lbug['title']
+                        priority = LpClient.priority_map[lbug['priority']]
+                        status = LpClient.status_map[lbug['status']]
+
                         fields = {
                             'title': new_title,
+                            'tags': lbug['tags'],
                             'description': lbug['description'],
                             'priority': lbug['priority']['jira'],
                             'status': lbug['status']['jira'],
                         }
 
                         if not DRY_RUN:
-                            self.jira.update_bug(
-                                self.jira.issue(jbug['key']),
-                                fields)
-
+                            self.jira.update_bug(self.jira.issue(jbug['key']),
+                                                 fields)
                     # Changed in JIRA
                     else:
+                        # TODO update bug status, importance, and milestone in LP
                         new_title = jbug['summary']
                         fields = {
                             'title': new_title,
@@ -430,9 +436,8 @@ class ThreadSyncBugs(threading.Thread):
                         }
 
                         if not DRY_RUN:
-                            self.lp.update_bug(
-                                self.lp.bugs[lbug['key']],
-                                fields)
+                            self.lp.update_bug(self.lp.bugs[lbug['key']],
+                                               fields)
                     break
                 break
 
@@ -475,16 +480,6 @@ class ThreadSyncBugs(threading.Thread):
                             'new_status': status,
                         })
 
-    def create_maintenance_milestones(self):
-        """Crete Maintenance milestones in Launchpad."""
-        # TODO(rsalin): should be implemented in the future
-        pass
-
-    def update_release_milestone(self):
-        """Relise LP milestone."""
-        # TODO(rsalin): should be implemented in the future
-        pass
-
 
 def main():
     log.info('Starting to sync.')
@@ -492,7 +487,7 @@ def main():
     threads = []
     for project in json.loads(config.get('LP', 'projects')):
         for milestone in json.loads(config.get('LP', 'milestones')):
-            th = ThreadSyncBugs(project, milestone, JiraClient(), LpClient())
+            th = ThreadSync(project, milestone, JiraClient(), LpClient())
             th.setDaemon(True)
             threads.append(th)
 
