@@ -69,7 +69,6 @@ def get_date(parameter):
 
 # TODO(rsalin): export Bug Owner (Issue Reporter) from LP to JIRA
 # TODO(rsalin): sync Attachments
-# TODO(rsalin): export Comments from LP to JIRA
 
 
 class Client(object):
@@ -80,6 +79,10 @@ class Client(object):
 
     @abstractmethod
     def authenticate(self):
+        pass
+
+    @abstractmethod
+    def get_bugs(self, project_name, milestone_names, **kwargs):
         pass
 
     @abstractmethod
@@ -95,21 +98,25 @@ class LpClient(Client):
     lp_api_version = 'devel'
 
     status_map = {
-        'New': 'Open',
-        'Incomplete': 'Open',
-        'Confirmed': 'Open',
-        'Triaged': 'Open',
-        'In Progress': 'In Progress',
-        'Fix Committed': 'Resolved',
+        'New': {'name': 'Open', 'code': 0},
+        'Incomplete': {'name': 'Open', 'code': 0},
+        'Opinion': {'name': 'Open', 'code': 0},
+        'Confirmed': {'name': 'Open', 'code': 0},
+        'Triaged': {'name': 'Open', 'code': 0},
+        'Invalid': {'name': 'Rejected', 'code': 1},
+        "Won't Fix": {'name': 'Rejected', 'code': 1},
+        'In Progress': {'name': 'In Progress', 'code': 2},
+        'Fix Committed': {'name': 'Resolved', 'code': 3},
+        'Fix Released': {'name': 'Closed', 'code': 4},
     }
 
     priority_map = {
-        'Critical': 'Critical',
-        'High': 'Major',
-        'Medium': 'Major',
-        'Low': 'Nice to have',
-        'Wishlist': 'Nice to have',
-        'Undecided': '',
+        'Critical': {'name': 'Critical', 'code': 0},
+        'High': {'name': 'Major', 'code': 1},
+        'Medium': {'name': 'Major', 'code': 1},
+        'Low': {'name': 'Nice to have', 'code': 2},
+        'Wishlist': {'name': 'Nice to have', 'code': 2},
+        'Undecided': {'name': '', 'code': 3},
     }
 
     @staticmethod
@@ -136,19 +143,33 @@ class LpClient(Client):
             sys.exit(1)
         return launchpad
 
-    def get_bugs(self, project_name, milestone_name, **kwargs):
-        bugs = []
+    def get_mu_milestones(self, project_name, milestone_updates):
+        project = self.get_project(project_name)
+        release = milestone_updates.replace('-updates', '')
+        mu_prefix = '{0}-mu-'.format(release)
+        milestones = [m['name'] for m in project.all_milestones.entries
+                      if mu_prefix in m['name']]
+        return milestones
+
+    def get_project(self, name):
+        project = None
         try:
-            log.info('Retrieving "%s" project from Launchpad.', milestone_name)
-            project = self.client.projects[project_name]
+            log.info('Retrieving "%s" project from Launchpad.', name)
+            project = self.client.projects[name]
         except KeyError:
             log.error("\"%s\" project wasn't found on Launchpad. Skipped.",
-                      project_name)
+                      name)
         except LPError as e:
             log.error(e.content)
-        else:
-            bugs = self.process_project_milestone(project, milestone_name,
-                                                  **kwargs)
+        return project
+
+    def get_bugs(self, project_name, milestone_names, **kwargs):
+        bugs = []
+        project = self.get_project(project_name)
+        if project:
+            for ms in milestone_names:
+                bug = self.process_project_milestone(project, ms, **kwargs)
+                bug.append(bug)
         return bugs
 
     def process_project_milestone(self, project, milestone_name, **kwargs):
@@ -243,23 +264,23 @@ class JiraClient(Client):
     summary_prefix = 'LP Bug #{0}: '
 
     status_map = {
-        'Open': 'New',
-        'Reopened': 'New',
-        'In Progress': 'In Progress',
-        'On Review': 'In Progress',
-        'Code Review': 'In Progress',
-        'Rejected': "Won't Fix",
-        'Resolved': 'Fix Committed',
-        'Verification': 'Fix Committed',
-        'Closed': 'Fix Released',
+        'Open': {'name': 'New', 'code': 0},
+        'Reopened': {'name': 'New', 'code': 0},
+        'Rejected': {'name': "Won't Fix", 'code': 1},
+        'In Progress': {'name': 'In Progress', 'code': 2},
+        'On Review': {'name': 'In Progress', 'code': 2},
+        'Code Review': {'name': 'In Progress', 'code': 2},
+        'Resolved': {'name': 'Fix Committed', 'code': 3},
+        'Verification': {'name': 'Fix Committed', 'code': 3},
+        'Closed': {'name': 'Fix Released', 'code': 4},
     }
 
     priority_map = {
-        'Blocker': 'Critical',
-        'Critical': 'Critical',
-        'Major': 'Medium',
-        'Nice to have': 'Low',
-        'Some day': 'Low',
+        'Blocker': {'name': 'Critical', 'code': 0},
+        'Critical': {'name': 'Critical', 'code': 0},
+        'Major': {'name': 'Medium', 'code': 1},
+        'Nice to have': {'name': 'Low', 'code': 2},
+        'Some day': {'name': 'Low', 'code': 2},
     }
 
     def authenticate(self):
@@ -272,17 +293,18 @@ class JiraClient(Client):
             sys.exit(1)
         return jira
 
-    def get_bugs(self, project_name, milestone_name):
+    def get_bugs(self, project_name, milestone_names, **kwargs):
         bugs = []
         max_results = 90000
+        milestones = ','.join(milestone_names)
         issue_fields = ','.join([
             'key', 'summary', 'description', 'issuetype', 'priority',
             'status', 'labels', 'updated'])
         search_string = ('project="{0}" and issueType="Bug" and labels in '
-                         '("{1}")').format(project_name, milestone_name)
+                         '("{1}")').format(project_name, milestones)
 
         log.info('Retrieving bugs for "%s" project, "%s" milestone from JIRA.',
-                 project_name, milestone_name)
+                 project_name, milestones)
         try:
             issues = self.client.search_issues(search_string,
                                                fields=issue_fields,
@@ -291,7 +313,7 @@ class JiraClient(Client):
             log.error('JIRA error. %s (%s)', e.url, e.status_code)
         else:
             log.info('Found %s bugs for "%s" project, "%s" milestone on JIRA.',
-                     len(issues), project_name, milestone_name)
+                     len(issues), project_name, milestones)
 
             for issue in issues:
                 bugs.append(self.process_bug(issue))
@@ -358,12 +380,14 @@ class ThreadSync(threading.Thread):
     def __init__(self, project, milestone, jira, lp):
         super(ThreadSync, self).__init__()
 
-        self.project = project
-        self.milestone = milestone
-        self.jira_project = json.loads(
-            config.get('JIRA', 'projects')).get(self.project)
         self.jira = jira
         self.lp = lp
+
+        self.project = project
+        self.milestone = milestone
+        self.mu_milestones = lp.get_mu_milestones(project, milestone)
+        self.jira_project = json.loads(
+            config.get('JIRA', 'projects')).get(project)
 
     def run(self):
         """Run bugs synchronization."""
@@ -378,11 +402,12 @@ class ThreadSync(threading.Thread):
         self.move_bugs_from_lp_to_jira()
 
     @staticmethod
-    def is_bugs_match(lbug, jbug):
+    def _is_bugs_match(lbug, jbug):
         """Bug matching criteria."""
         return lbug['title'] in jbug['title'] or lbug['key'] in jbug['title']
 
-    def get_jira_fields_to_update(self, jbug, lbug):
+    @staticmethod
+    def _get_jira_fields_to_update(jbug, lbug):
         """Get fields that have been changed in LP to sync with JIRA."""
         fields = {}
 
@@ -400,17 +425,22 @@ class ThreadSync(threading.Thread):
         if jbug['description'] != lbug['description']:
             fields.update({'description': lbug['description']})
 
-        if False:
-            priority = LpClient.priority_map[lbug['priority']]
-            fields.update({'priority': {'name': priority}})
+        new_priority = LpClient.priority_map[lbug['priority']]['name']
+        new_priority_code = JiraClient.priority_map[new_priority]['code']
+        old_priority_code = LpClient.priority_map[lbug['priority']]['code']
+        if old_priority_code != new_priority_code:
+            fields.update({'priority': {'name': new_priority}})
 
-        if False:
-            status = LpClient.status_map[lbug['status']]
-            fields.update({'status': {'name': status}})
+        new_status = LpClient.status_map[lbug['status']]['name']
+        new_status_code = JiraClient.status_map[new_status]['code']
+        old_status_code = LpClient.status_map[lbug['status']]['code']
+        if old_status_code != new_status_code:
+            fields.update({'status': {'name': new_status}})
 
         return fields
 
-    def get_lp_fields_to_update(self, jbug, lbug):
+    @staticmethod
+    def _get_lp_fields_to_update(jbug, lbug):
         """Get fields that have been changed in JIRA to sync with LP."""
         fields = {}
 
@@ -422,6 +452,25 @@ class ThreadSync(threading.Thread):
         #     'status': jbug['status']['launchpad'],
         # }
 
+        # if not set(lbug['tags']).issubset(jbug['tags']):
+        #     new_labels = list(set(lbug['tags']) | set(jbug['tags']))
+        #     fields.update({'labels': new_labels})
+        #
+        # if jbug['description'] != lbug['description']:
+        #     fields.update({'description': lbug['description']})
+        #
+        # new_priority = LpClient.priority_map[lbug['priority']]['name']
+        # new_priority_code = JiraClient.priority_map[new_priority]['code']
+        # old_priority_code = LpClient.priority_map[lbug['priority']]['code']
+        # if old_priority_code != new_priority_code:
+        #     fields.update({'priority': {'name': new_priority}})
+        #
+        # new_status = LpClient.status_map[lbug['status']]['name']
+        # new_status_code = JiraClient.status_map[new_status]['code']
+        # old_status_code = LpClient.status_map[lbug['status']]['code']
+        # if old_status_code != new_status_code:
+        #     fields.update({'status': {'name': new_status}})
+
         return fields
 
     def sync_created_bugs(self):
@@ -431,39 +480,41 @@ class ThreadSync(threading.Thread):
         # TODO(rsalin): update the release date of milestone in LP after
         # the release in JIRA
 
-        jira_bugs = self.jira.get_bugs(self.jira_project, self.milestone)
+        milestones = [self.milestone] + self.mu_milestones
+        jira_bugs = self.jira.get_bugs(self.jira_project, milestones)
         lp_bugs = self.lp.get_bugs(
-            self.project, self.milestone,
+            self.project, milestones,
             status=json.loads(config.get('LP', 'sync_statuses')))
+        # TODO testing
 
         for jbug in jira_bugs:
             for lbug in lp_bugs:
-                if not self.is_bugs_match(lbug, jbug):
+                if not self._is_bugs_match(lbug, jbug):
                     continue
 
                 # Determine the last modified bug
                 if jbug['updated'] < lbug['updated']:
                     bug = self.jira.issue(jbug['key'])
-                    fields = self.get_jira_fields_to_update(jbug, lbug)
+                    fields = self._get_jira_fields_to_update(jbug, lbug)
                     if not DRY_RUN and fields:
                         self.jira.update_bug(bug, fields)
                 else:
                     bug = self.lp.bugs[lbug['key']]
-                    fields = self.get_lp_fields_to_update(jbug, lbug)
+                    fields = self._get_lp_fields_to_update(jbug, lbug)
                     if not DRY_RUN and fields:
                         self.lp.update_bug(bug, fields)
                 break
 
     def move_bugs_from_lp_to_jira(self):
         """Move new bugs from Launchpad to JIRA."""
-        jira_bugs = self.jira.get_bugs(self.jira_project, self.milestone)
+        jira_bugs = self.jira.get_bugs(self.jira_project, [self.milestone])
         lp_bugs = self.lp.get_bugs(
             self.project, self.milestone,
             status=json.loads(config.get('LP', 'export_statuses')))
         lp_bugs = self.lp.clean_duplicates(lp_bugs)
 
         for lbug in lp_bugs:
-            synced = any(self.is_bugs_match(lbug, jbug) for jbug in jira_bugs)
+            synced = any(self._is_bugs_match(lbug, jbug) for jbug in jira_bugs)
             if not synced:
                 title = lbug['title']
                 if lbug['key'] not in lbug['title']:
@@ -474,8 +525,8 @@ class ThreadSync(threading.Thread):
                 tags.append(self.milestone)
                 tags.append(lbug['bug_target_name'])
 
-                priority = LpClient.priority_map[lbug['priority']]
-                status = LpClient.status_map[lbug['status']]
+                priority = LpClient.priority_map[lbug['priority']]['name']
+                status = LpClient.status_map[lbug['status']]['name']
 
                 fields = {
                     'project': {'key': self.jira_project},
