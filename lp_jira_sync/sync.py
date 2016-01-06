@@ -264,7 +264,6 @@ class LpClient(Client):
                 bug.tags = tags
             bug.lp_save()
 
-            # FIXME: find appropriate bug_task*
             if status or importance:
                 bug_task = self.find_bug_task(bug, milestone)
                 if status:
@@ -428,9 +427,7 @@ class ThreadSync(threading.Thread):
     @staticmethod
     def _is_bugs_match(lbug, jbug):
         """Bug matching criteria."""
-        return ((lbug['title'] in jbug['title'] or
-                 lbug['key'] in jbug['title']) and
-                lbug['milestone'] in jbug['milestone'])
+        return lbug['title'] in jbug['title'] or lbug['key'] in jbug['title']
 
     def _get_new_summary(self, lbug):
         """Returns new bug summary for LP."""
@@ -472,8 +469,7 @@ class ThreadSync(threading.Thread):
         fields = {}
 
         jbug_title = re.sub(self.summary_prefix_pattern, '', jbug['title'])
-        # if lbug['title'] != jbug_title:
-        if lbug['title'] == jbug_title:
+        if lbug['title'] != jbug_title:
             fields.update({'title': jbug_title})
 
         if jbug['description'] != lbug['description']:
