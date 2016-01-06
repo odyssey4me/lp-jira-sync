@@ -556,8 +556,7 @@ class ThreadSync(threading.Thread):
                 summary = self._get_new_summary(lbug)
 
                 labels = lbug['tags']
-                labels.append(self.milestone)
-                labels.append(lbug['bug_target_name'])
+                labels.append(lbug['milestone'])
 
                 priority = LpClient.priority_map[lbug['priority']]['name']
                 status = LpClient.status_map[lbug['status']]['name']
