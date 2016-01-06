@@ -243,6 +243,8 @@ class LpClient(Client):
                 t.milestone.name == milestone_name][0]
 
     def update_bug(self, bug, fields):
+        current_title = bug.title
+
         title = fields.get('title', '')
         description = fields.get('description')
         tags = fields.get('tags')
@@ -254,7 +256,7 @@ class LpClient(Client):
             raise ValueError('Milestone is empty, but it needs to update'
                              'status and importance')
 
-        log.info('Updating bug on Launchpad: "%s"', title)
+        log.info('Updating bug on Launchpad: "%s"', current_title)
         try:
             if title:
                 bug.title = title
@@ -272,10 +274,11 @@ class LpClient(Client):
                     bug_task.importance = importance
                 bug_task.lp_save()
         except Exception as e:
-            log.error('Updating bug failed on Launchpad: "%s"', title)
+            log.error('Updating bug failed on Launchpad: "%s"', current_title)
             raise e
         else:
-            log.info('Bug was successfully updated on Launchpad: "%s"', title)
+            log.info('Bug was successfully updated on Launchpad: "%s"',
+                     current_title)
 
     def update_bug_task(self, bug):
         pass
