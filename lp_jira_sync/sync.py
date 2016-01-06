@@ -9,6 +9,7 @@ import httplib2
 import json
 import logging
 import os
+import re
 import sys
 import threading
 
@@ -82,6 +83,10 @@ class Client(object):
         pass
 
     @abstractmethod
+    def bug(self, key):
+        pass
+
+    @abstractmethod
     def get_bugs(self, project_name, milestone_names, **kwargs):
         pass
 
@@ -143,6 +148,12 @@ class LpClient(Client):
             sys.exit(1)
         return launchpad
 
+    def bug(self, key):
+        try:
+            return self.client.bugs[key]
+        except KeyError:
+            return None
+
     def get_mu_milestones(self, project_name, milestone_updates):
         project = self.get_project(project_name)
         release = milestone_updates.replace('-updates', '')
@@ -169,7 +180,7 @@ class LpClient(Client):
         if project:
             for ms in milestone_names:
                 bug = self.process_project_milestone(project, ms, **kwargs)
-                bug.append(bug)
+                bugs.extend(bug)
         return bugs
 
     def process_project_milestone(self, project, milestone_name, **kwargs):
@@ -185,13 +196,13 @@ class LpClient(Client):
                 len(bug_tasks), project.name, milestone_name)
 
             for task in bug_tasks:
-                bugs.append(self.process_bug(task))
+                bugs.append(self.process_bug(task, milestone_name))
         else:
             log.error("\"%s\" milestone wasn't found on Launchpad. "
                       "Skipped.", milestone_name)
         return bugs
 
-    def process_bug(self, task):
+    def process_bug(self, task, milestone_name):
         bug = task.bug
         # owner = None
         # try:
@@ -200,20 +211,18 @@ class LpClient(Client):
         # except ValueError:
         #     pass
 
-        bug_info = {
+        return {
             'key': unicode(bug.id),
             'title': bug.title,
-            'summary': bug.title,
             'description': get_str(bug.description),
             'tags': bug.tags,
             'updated': bug.date_last_updated,
-            'bug_target_name': task.bug_target_name,
+            'milestone': milestone_name,
             'priority': task.importance,
             'status': task.status,
             # 'owner': owner,
             # 'attachments': bug.attachments.entries,
         }
-        return bug_info
 
     def create_bug(self, fields):
         new_bug = None
@@ -229,12 +238,21 @@ class LpClient(Client):
             log.info('Bug was successfully created on Launchpad: "%s"', title)
         return new_bug
 
+    def find_bug_task(self, bug, milestone_name):
+        return [t for t in bug.bug_tasks if
+                t.milestone.name == milestone_name][0]
+
     def update_bug(self, bug, fields):
         title = fields.get('title', '')
         description = fields.get('description')
         tags = fields.get('tags')
         status = fields.get('status')
-        importance = fields.get('priority')
+        importance = fields.get('importance')
+        milestone = fields.get('milestone')
+
+        if (status or importance) and not milestone:
+            raise ValueError('Milestone is empty, but it needs to update'
+                             'status and importance')
 
         log.info('Updating bug on Launchpad: "%s"', title)
         try:
@@ -246,23 +264,28 @@ class LpClient(Client):
                 bug.tags = tags
             bug.lp_save()
 
-            # FIXME: find appropriate bug_task
-            bug_task = bug.bug_tasks[0]
-            if status:
-                bug_task.status = status
-            if importance:
-                bug_task.importance = importance
-            bug_task.lp_save()
+            # FIXME: find appropriate bug_task*
+            if status or importance:
+                bug_task = self.find_bug_task(bug, milestone)
+                if status:
+                    bug_task.status = status
+                if importance:
+                    bug_task.importance = importance
+                bug_task.lp_save()
         except Exception as e:
             log.error('Updating bug failed on Launchpad: "%s"', title)
             raise e
         else:
             log.info('Bug was successfully updated on Launchpad: "%s"', title)
 
+    def update_bug_task(self, bug):
+        pass
+
+    def release_milestone(self, milestone):
+        pass
+
 
 class JiraClient(Client):
-    summary_prefix = 'LP Bug #{0}: '
-
     status_map = {
         'Open': {'name': 'New', 'code': 0},
         'Reopened': {'name': 'New', 'code': 0},
@@ -293,6 +316,12 @@ class JiraClient(Client):
             sys.exit(1)
         return jira
 
+    def bug(self, key):
+        try:
+            return self.client.issue(key)
+        except JIRAError:
+            return None
+
     def get_bugs(self, project_name, milestone_names, **kwargs):
         bugs = []
         max_results = 90000
@@ -301,8 +330,7 @@ class JiraClient(Client):
             'key', 'summary', 'description', 'issuetype', 'priority',
             'status', 'labels', 'updated'])
         search_string = ('project="{0}" and issueType="Bug" and labels in '
-                         '("{1}")').format(project_name, milestones)
-
+                         '({1})').format(project_name, milestones)
         log.info('Retrieving bugs for "%s" project, "%s" milestone from JIRA.',
                  project_name, milestones)
         try:
@@ -320,21 +348,15 @@ class JiraClient(Client):
         return bugs
 
     def process_bug(self, issue):
-        bug = {
+        return {
             'key': unicode(issue.key),
             'title': issue.fields.summary,
-            'summary': issue.fields.summary,
             'description': get_str(issue.fields.description),
             'tags': issue.fields.labels,
             'priority': issue.fields.priority.name,
             'status': issue.fields.status.name,
             'updated': get_date(issue.fields.updated),
         }
-
-        prefix = self.summary_prefix.format(bug['key'])
-        if bug['summary'].startswith(prefix):
-            bug['summary'] = bug['summary'].replace(prefix, '')
-        return bug
 
     def create_bug(self, fields):
         new_issue = None
@@ -388,6 +410,8 @@ class ThreadSync(threading.Thread):
         self.mu_milestones = lp.get_mu_milestones(project, milestone)
         self.jira_project = json.loads(
             config.get('JIRA', 'projects')).get(project)
+        self.summary_prefix = 'LP Bug #{0}: '
+        self.summary_prefix_pattern = re.compile(r'LP Bug #\d+?:\s')
 
     def run(self):
         """Run bugs synchronization."""
@@ -398,24 +422,28 @@ class ThreadSync(threading.Thread):
             log.warn('Dry run mode active. No changes will be performed.')
             log.warn(40 * '-')
 
-        self.sync_created_bugs()
-        self.move_bugs_from_lp_to_jira()
+        self.sync_exported_bugs()
+        self.export_bugs_from_lp_to_jira()
 
     @staticmethod
     def _is_bugs_match(lbug, jbug):
         """Bug matching criteria."""
-        return lbug['title'] in jbug['title'] or lbug['key'] in jbug['title']
+        return ((lbug['title'] in jbug['title'] or
+                 lbug['key'] in jbug['title']) and
+                lbug['milestone'] in jbug['milestone'])
 
-    @staticmethod
-    def _get_jira_fields_to_update(jbug, lbug):
-        """Get fields that have been changed in LP to sync with JIRA."""
+    def _get_new_summary(self, lbug):
+        """Returns new bug summary for LP."""
+        return '{0}{1}'.format(self.summary_prefix.format(lbug['key']),
+                               lbug['title'])
+
+    def _get_jira_fields_to_update(self, jbug, lbug):
+        """Returns fields that have been changed in LP to sync with JIRA."""
         fields = {}
 
-        if jbug['summary'] != lbug['summary']:
-            new_summary = lbug['title']
-            if lbug['key'] not in jbug['title']:
-                new_summary = '{0}{1}'.format(
-                    JiraClient.summary_prefix.format(lbug['key']), new_summary)
+        jbug_title = re.sub(self.summary_prefix_pattern, '', jbug['title'])
+        if lbug['title'] != jbug_title:
+            new_summary = self._get_new_summary(lbug)
             fields.update({'summary': new_summary})
 
         if not set(lbug['tags']).issubset(jbug['tags']):
@@ -439,43 +467,37 @@ class ThreadSync(threading.Thread):
 
         return fields
 
-    @staticmethod
-    def _get_lp_fields_to_update(jbug, lbug):
-        """Get fields that have been changed in JIRA to sync with LP."""
+    def _get_lp_fields_to_update(self, jbug, lbug):
+        """Returns fields that have been changed in JIRA to sync with LP."""
         fields = {}
 
-        # new_title = jbug['summary']
-        # fields = {
-        #     'title': new_title,
-        #     'description': jbug['description'],
-        #     'priority': jbug['priority']['launchpad'],
-        #     'status': jbug['status']['launchpad'],
-        # }
+        jbug_title = re.sub(self.summary_prefix_pattern, '', jbug['title'])
+        # if lbug['title'] != jbug_title:
+        if lbug['title'] == jbug_title:
+            fields.update({'title': jbug_title})
 
-        # if not set(lbug['tags']).issubset(jbug['tags']):
-        #     new_labels = list(set(lbug['tags']) | set(jbug['tags']))
-        #     fields.update({'labels': new_labels})
-        #
-        # if jbug['description'] != lbug['description']:
-        #     fields.update({'description': lbug['description']})
-        #
-        # new_priority = LpClient.priority_map[lbug['priority']]['name']
-        # new_priority_code = JiraClient.priority_map[new_priority]['code']
-        # old_priority_code = LpClient.priority_map[lbug['priority']]['code']
-        # if old_priority_code != new_priority_code:
-        #     fields.update({'priority': {'name': new_priority}})
-        #
-        # new_status = LpClient.status_map[lbug['status']]['name']
-        # new_status_code = JiraClient.status_map[new_status]['code']
-        # old_status_code = LpClient.status_map[lbug['status']]['code']
-        # if old_status_code != new_status_code:
-        #     fields.update({'status': {'name': new_status}})
+        if jbug['description'] != lbug['description']:
+            fields.update({'description': jbug['description']})
+
+        new_importance = JiraClient.priority_map[jbug['priority']]['name']
+        new_importance_code = LpClient.priority_map[new_importance]['code']
+        old_importance_code = JiraClient.priority_map[jbug['priority']]['code']
+        if old_importance_code != new_importance_code:
+            fields.update({'importance': new_importance})
+
+        new_status = JiraClient.status_map[jbug['status']]['name']
+        new_status_code = LpClient.status_map[new_status]['code']
+        old_status_code = JiraClient.status_map[jbug['status']]['code']
+        if old_status_code != new_status_code:
+            fields.update({'status': new_status})
+
+        fields.update({'milestone': lbug['milestone']})
 
         return fields
 
-    def sync_created_bugs(self):
-        """Sync already created tasks."""
-        # TODO(rsalin): move bugs to the maintenance milestone.
+    def sync_exported_bugs(self):
+        """Sync already exported bugs."""
+        # TODO(rsalin): add maintenance milestone to the bug.
         # When and how it should be done?
         # TODO(rsalin): update the release date of milestone in LP after
         # the release in JIRA
@@ -485,64 +507,79 @@ class ThreadSync(threading.Thread):
         lp_bugs = self.lp.get_bugs(
             self.project, milestones,
             status=json.loads(config.get('LP', 'sync_statuses')))
-        # TODO testing
 
+        synced = []
         for jbug in jira_bugs:
             for lbug in lp_bugs:
                 if not self._is_bugs_match(lbug, jbug):
                     continue
 
-                # Determine the last modified bug
+                # TODO(rsalin): what if the both was changed since the last
+                # sync? Investigate more precise way to resolve it
                 if jbug['updated'] < lbug['updated']:
-                    bug = self.jira.issue(jbug['key'])
+                    log.info('Update bug "%s" in JIRA', lbug['title'])
+
+                    bug = self.jira.bug(jbug['key'])
                     fields = self._get_jira_fields_to_update(jbug, lbug)
-                    if not DRY_RUN and fields:
-                        self.jira.update_bug(bug, fields)
+                    if fields:
+                        synced.append(fields)
+
+                        if not DRY_RUN:
+                            self.jira.update_bug(bug, fields)
                 else:
-                    bug = self.lp.bugs[lbug['key']]
+                    log.info('Update bug "%s" in Launchpad', jbug['title'])
+
+                    bug = self.lp.bug(lbug['key'])
                     fields = self._get_lp_fields_to_update(jbug, lbug)
-                    if not DRY_RUN and fields:
-                        self.lp.update_bug(bug, fields)
+                    if fields:
+                        synced.append(fields)
+
+                        if not DRY_RUN:
+                            self.lp.update_bug(bug, fields)
                 break
+        return synced
 
-    def move_bugs_from_lp_to_jira(self):
-        """Move new bugs from Launchpad to JIRA."""
-        jira_bugs = self.jira.get_bugs(self.jira_project, [self.milestone])
+    def export_bugs_from_lp_to_jira(self):
+        """Export new bugs from Launchpad to JIRA."""
+        milestones = [self.milestone]
+        jira_bugs = self.jira.get_bugs(self.jira_project, milestones)
         lp_bugs = self.lp.get_bugs(
-            self.project, self.milestone,
+            self.project, milestones,
             status=json.loads(config.get('LP', 'export_statuses')))
-        lp_bugs = self.lp.clean_duplicates(lp_bugs)
 
+        exported = []
         for lbug in lp_bugs:
             synced = any(self._is_bugs_match(lbug, jbug) for jbug in jira_bugs)
             if not synced:
-                title = lbug['title']
-                if lbug['key'] not in lbug['title']:
-                    title = '{0}{1}'.format(
-                        JiraClient.summary_prefix.format(lbug['key']), title)
+                log.info('Export bug "%s" from Launchpad to JIRA',
+                         lbug['title'])
 
-                tags = lbug['tags']
-                tags.append(self.milestone)
-                tags.append(lbug['bug_target_name'])
+                summary = self._get_new_summary(lbug)
+
+                labels = lbug['tags']
+                labels.append(self.milestone)
+                labels.append(lbug['bug_target_name'])
 
                 priority = LpClient.priority_map[lbug['priority']]['name']
                 status = LpClient.status_map[lbug['status']]['name']
 
                 fields = {
                     'project': {'key': self.jira_project},
-                    'summary': title,
+                    'summary': summary,
                     'description': lbug['description'],
                     'issuetype': {'name': 'Bug'},
-                    'labels': tags,
+                    'labels': labels,
                     'priority': {'name': priority},
                 }
+                exported.append(fields)
+
                 if not DRY_RUN:
                     new_issue = self.jira.create_bug(fields=fields)
                     if new_issue:
                         self.jira.update_bug(new_issue, fields={
-                            'summary': title,
                             'status': {'name': status},
                         })
+        return exported
 
 
 def main():
