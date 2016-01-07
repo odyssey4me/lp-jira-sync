@@ -70,6 +70,7 @@ def get_date(parameter):
 
 # TODO(rsalin): export Bug Owner (Issue Reporter) from LP to JIRA
 # TODO(rsalin): sync Attachments
+# TODO(rsalin): LpClient performance optimization
 
 
 class Client(object):
@@ -101,6 +102,8 @@ class Client(object):
 
 class LpClient(Client):
     lp_api_version = 'devel'
+
+    milestones_re = re.compile(r'\+milestone/(?P<ms>.+)$')
 
     status_map = {
         'New': {'name': 'Open', 'code': 0},
@@ -162,6 +165,10 @@ class LpClient(Client):
                       if mu_prefix in m['name']]
         return milestones
 
+    def get_bug_milestones(self, bug):
+        return [re.search(self.milestones_re, x['milestone_link']).group('ms')
+                for x in bug.bug_tasks.entries if x['milestone_link']]
+
     def get_project(self, name):
         project = None
         try:
@@ -218,6 +225,7 @@ class LpClient(Client):
             'tags': bug.tags,
             'updated': bug.date_last_updated,
             'milestone': milestone_name,
+            'all_milestones': self.get_bug_milestones(bug),
             'priority': task.importance,
             'status': task.status,
             # 'owner': owner,
@@ -280,10 +288,15 @@ class LpClient(Client):
             log.info('Bug was successfully updated on Launchpad: "%s"',
                      current_title)
 
-    def update_bug_task(self, bug):
-        pass
+    def update_bug_task_milestone(self, project_name, bug, milestone_old_name,
+                                  milestone_new_name):
+        bug_task = self.find_bug_task(bug, milestone_old_name)
+        project = self.get_project(project_name)
+        milestone_new = project.getMilestone(name=milestone_new_name)
+        bug_task.milestone = milestone_new
+        bug_task.lp_save()
 
-    def release_milestone(self, milestone):
+    def release_milestone(self, milestone_name):
         pass
 
 
@@ -383,14 +396,15 @@ class JiraClient(Client):
             bug.update(**fields)
 
             if status:
+                key = bug.key
                 new_status_id = None
-                for tr in self.client.transitions(bug.key):
+                for tr in self.client.transitions(key):
                     if tr['to']['name'] == status:
                         new_status_id = tr['id']
 
                 if new_status_id is not None:
                     self.client.transition_issue(
-                        bug.key, new_status_id,
+                        key, new_status_id,
                         comment='Automatically updated by lp_jira_sync '
                                 'script.')
         except JIRAError as e:
@@ -494,10 +508,26 @@ class ThreadSync(threading.Thread):
 
         return fields
 
+    def check_mu_milestone(self, jbug, lbug):
+        """Check maintenance update milestone in JIRA.
+
+        Determine which <release>-mu-<num> milestone exists and assign it
+        to the bug task with the <release>-updates milestone in LP.
+        """
+        labels = [t for t in jbug['tags'] if '-mu-' in t]
+        for label in labels:
+            if label not in lbug['all_milestones']:
+                log.info('Milestone %s will be added to "%s: %s" bug in '
+                         'Launchpad', label, lbug['key'], lbug['title'])
+
+                bug = self.lp.bug(lbug['key'])
+                if not DRY_RUN:
+                    self.lp.update_bug_task_milestone(self.project, bug,
+                                                      self.milestone, label)
+                break
+
     def sync_exported_bugs(self):
         """Sync already exported bugs."""
-        # TODO(rsalin): add maintenance milestone to the bug.
-        # When and how it should be done?
         # TODO(rsalin): update the release date of milestone in LP after
         # the release in JIRA
 
@@ -518,23 +548,25 @@ class ThreadSync(threading.Thread):
                 if jbug['updated'] < lbug['updated']:
                     log.info('Update bug "%s" in JIRA', lbug['title'])
 
-                    bug = self.jira.bug(jbug['key'])
                     fields = self._get_jira_fields_to_update(jbug, lbug)
                     if fields:
                         synced.append(fields)
+                        bug = self.jira.bug(jbug['key'])
 
                         if not DRY_RUN:
                             self.jira.update_bug(bug, fields)
                 else:
                     log.info('Update bug "%s" in Launchpad', jbug['title'])
 
-                    bug = self.lp.bug(lbug['key'])
                     fields = self._get_lp_fields_to_update(jbug, lbug)
                     if fields:
                         synced.append(fields)
+                        bug = self.lp.bug(lbug['key'])
 
                         if not DRY_RUN:
                             self.lp.update_bug(bug, fields)
+
+                self.check_mu_milestone(jbug, lbug)
                 break
         return synced
 
@@ -571,12 +603,11 @@ class ThreadSync(threading.Thread):
                 }
                 exported.append(fields)
 
-                if not DRY_RUN:
-                    new_issue = self.jira.create_bug(fields=fields)
-                    if new_issue:
-                        self.jira.update_bug(new_issue, fields={
-                            'status': {'name': status},
-                        })
+                new_issue = self.jira.create_bug(fields=fields)
+                if not DRY_RUN and new_issue:
+                    self.jira.update_bug(new_issue, fields={
+                        'status': {'name': status},
+                    })
         return exported
 
 
