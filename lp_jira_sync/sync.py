@@ -122,9 +122,9 @@ class LpClient(Client):
         'Critical': {'name': 'Critical', 'code': 0},
         'High': {'name': 'Major', 'code': 1},
         'Medium': {'name': 'Major', 'code': 1},
+        'Undecided': {'name': 'Major', 'code': 1},
         'Low': {'name': 'Nice to have', 'code': 2},
         'Wishlist': {'name': 'Nice to have', 'code': 2},
-        'Undecided': {'name': '', 'code': 3},
     }
 
     @staticmethod
@@ -603,11 +603,12 @@ class ThreadSync(threading.Thread):
                 }
                 exported.append(fields)
 
-                new_issue = self.jira.create_bug(fields=fields)
-                if not DRY_RUN and new_issue:
-                    self.jira.update_bug(new_issue, fields={
-                        'status': {'name': status},
-                    })
+                if not DRY_RUN:
+                    new_issue = self.jira.create_bug(fields=fields)
+                    if new_issue:
+                        self.jira.update_bug(new_issue, fields={
+                            'status': {'name': status},
+                        })
         return exported
 
 
