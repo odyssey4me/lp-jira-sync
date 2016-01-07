@@ -70,7 +70,6 @@ def get_date(parameter):
 
 # TODO(rsalin): export Bug Owner (Issue Reporter) from LP to JIRA
 # TODO(rsalin): sync Attachments
-# TODO(rsalin): LpClient performance optimization
 
 
 class Client(object):
@@ -127,6 +126,11 @@ class LpClient(Client):
         'Wishlist': {'name': 'Nice to have', 'code': 2},
     }
 
+    def __init__(self, project_name):
+        super(LpClient, self).__init__()
+        self.project_name = project_name
+        self.project = self.get_project(project_name)
+
     @staticmethod
     def clean_duplicates(bugs):
         titles = set()
@@ -157,11 +161,10 @@ class LpClient(Client):
         except KeyError:
             return None
 
-    def get_mu_milestones(self, project_name, milestone_updates):
-        project = self.get_project(project_name)
+    def get_mu_milestones(self, milestone_updates):
         release = milestone_updates.replace('-updates', '')
         mu_prefix = '{0}-mu-'.format(release)
-        milestones = [m['name'] for m in project.all_milestones.entries
+        milestones = [m['name'] for m in self.project.all_milestones.entries
                       if mu_prefix in m['name']]
         return milestones
 
@@ -172,7 +175,6 @@ class LpClient(Client):
     def get_project(self, name):
         project = None
         try:
-            log.info('Retrieving "%s" project from Launchpad.', name)
             project = self.client.projects[name]
         except KeyError:
             log.error("\"%s\" project wasn't found on Launchpad. Skipped.",
@@ -183,24 +185,23 @@ class LpClient(Client):
 
     def get_bugs(self, project_name, milestone_names, **kwargs):
         bugs = []
-        project = self.get_project(project_name)
-        if project:
+        if self.project:
             for ms in milestone_names:
-                bug = self.process_project_milestone(project, ms, **kwargs)
+                bug = self.process_project_milestone(ms, **kwargs)
                 bugs.extend(bug)
         return bugs
 
-    def process_project_milestone(self, project, milestone_name, **kwargs):
+    def process_project_milestone(self, milestone_name, **kwargs):
         bugs = []
 
-        milestone = project.getMilestone(name=milestone_name)
+        milestone = self.project.getMilestone(name=milestone_name)
         if milestone:
             log.info('Retrieving bugs for "%s" project, "%s" milestone from '
-                     'Launchpad.', project.name, milestone_name)
+                     'Launchpad.', self.project_name, milestone_name)
             bug_tasks = milestone.searchTasks(**kwargs)
             log.info(
                 'Found %s bugs for "%s" project, "%s" milestone on Launchpad.',
-                len(bug_tasks), project.name, milestone_name)
+                len(bug_tasks), self.project_name, milestone_name)
 
             for task in bug_tasks:
                 bugs.append(self.process_bug(task, milestone_name))
@@ -247,8 +248,10 @@ class LpClient(Client):
         return new_bug
 
     def find_bug_task(self, bug, milestone_name):
-        return [t for t in bug.bug_tasks if
-                t.milestone.name == milestone_name][0]
+        for task in bug.bug_tasks:
+            milestone = task.milestone
+            if milestone and milestone.name == milestone_name:
+                return task
 
     def update_bug(self, bug, fields):
         current_title = bug.title
@@ -276,11 +279,12 @@ class LpClient(Client):
 
             if status or importance:
                 bug_task = self.find_bug_task(bug, milestone)
-                if status:
-                    bug_task.status = status
-                if importance:
-                    bug_task.importance = importance
-                bug_task.lp_save()
+                if bug_task:
+                    if status:
+                        bug_task.status = status
+                    if importance:
+                        bug_task.importance = importance
+                    bug_task.lp_save()
         except Exception as e:
             log.error('Updating bug failed on Launchpad: "%s"', current_title)
             raise e
@@ -288,13 +292,13 @@ class LpClient(Client):
             log.info('Bug was successfully updated on Launchpad: "%s"',
                      current_title)
 
-    def update_bug_task_milestone(self, project_name, bug, milestone_old_name,
+    def update_bug_task_milestone(self, bug, milestone_old_name,
                                   milestone_new_name):
         bug_task = self.find_bug_task(bug, milestone_old_name)
-        project = self.get_project(project_name)
-        milestone_new = project.getMilestone(name=milestone_new_name)
-        bug_task.milestone = milestone_new
-        bug_task.lp_save()
+        if bug_task:
+            milestone_new = self.project.getMilestone(name=milestone_new_name)
+            bug_task.milestone = milestone_new
+            bug_task.lp_save()
 
     def release_milestone(self, milestone_name):
         pass
@@ -321,6 +325,11 @@ class JiraClient(Client):
         'Some day': {'name': 'Low', 'code': 2},
     }
 
+    def __init__(self, project_name):
+        super(JiraClient, self).__init__()
+        self.jira_project = json.loads(
+            config.get('JIRA', 'projects')).get(project_name)
+
     def authenticate(self):
         try:
             jira = JIRA(basic_auth=(config.get('JIRA', 'user'),
@@ -337,7 +346,7 @@ class JiraClient(Client):
         except JIRAError:
             return None
 
-    def get_bugs(self, project_name, milestone_names, **kwargs):
+    def get_bugs(self, milestone_names, **kwargs):
         bugs = []
         max_results = 90000
         milestones = ','.join(milestone_names)
@@ -345,9 +354,9 @@ class JiraClient(Client):
             'key', 'summary', 'description', 'issuetype', 'priority',
             'status', 'labels', 'updated'])
         search_string = ('project="{0}" and issueType="Bug" and labels in '
-                         '({1})').format(project_name, milestones)
+                         '({1})').format(self.jira_project, milestones)
         log.info('Retrieving bugs for "%s" project, "%s" milestone from JIRA.',
-                 project_name, milestones)
+                 self.jira_project, milestones)
         try:
             issues = self.client.search_issues(search_string,
                                                fields=issue_fields,
@@ -356,7 +365,7 @@ class JiraClient(Client):
             log.error('JIRA error. %s (%s)', e.url, e.status_code)
         else:
             log.info('Found %s bugs for "%s" project, "%s" milestone on JIRA.',
-                     len(issues), project_name, milestones)
+                     len(issues), self.jira_project, milestones)
 
             for issue in issues:
                 bugs.append(self.process_bug(issue))
@@ -415,15 +424,15 @@ class JiraClient(Client):
 
 
 class ThreadSync(threading.Thread):
-    def __init__(self, project, milestone, jira, lp):
+    def __init__(self, project, milestone):
         super(ThreadSync, self).__init__()
 
-        self.jira = jira
-        self.lp = lp
+        self.jira = JiraClient(project)
+        self.lp = LpClient(project)
 
         self.project = project
         self.milestone = milestone
-        self.mu_milestones = lp.get_mu_milestones(project, milestone)
+        self.mu_milestones = self.lp.get_mu_milestones(milestone)
         self.jira_project = json.loads(
             config.get('JIRA', 'projects')).get(project)
         self.summary_prefix = 'LP Bug #{0}: '
@@ -522,8 +531,8 @@ class ThreadSync(threading.Thread):
 
                 bug = self.lp.bug(lbug['key'])
                 if not DRY_RUN:
-                    self.lp.update_bug_task_milestone(self.project, bug,
-                                                      self.milestone, label)
+                    self.lp.update_bug_task_milestone(bug, self.milestone,
+                                                      label)
                 break
 
     def sync_exported_bugs(self):
@@ -532,7 +541,7 @@ class ThreadSync(threading.Thread):
         # the release in JIRA
 
         milestones = [self.milestone] + self.mu_milestones
-        jira_bugs = self.jira.get_bugs(self.jira_project, milestones)
+        jira_bugs = self.jira.get_bugs(milestones)
         lp_bugs = self.lp.get_bugs(
             self.project, milestones,
             status=json.loads(config.get('LP', 'sync_statuses')))
@@ -573,7 +582,7 @@ class ThreadSync(threading.Thread):
     def export_bugs_from_lp_to_jira(self):
         """Export new bugs from Launchpad to JIRA."""
         milestones = [self.milestone]
-        jira_bugs = self.jira.get_bugs(self.jira_project, milestones)
+        jira_bugs = self.jira.get_bugs(milestones)
         lp_bugs = self.lp.get_bugs(
             self.project, milestones,
             status=json.loads(config.get('LP', 'export_statuses')))
@@ -618,7 +627,7 @@ def main():
     threads = []
     for project in json.loads(config.get('LP', 'projects')):
         for milestone in json.loads(config.get('LP', 'milestones')):
-            th = ThreadSync(project, milestone, JiraClient(), LpClient())
+            th = ThreadSync(project, milestone)
             th.setDaemon(True)
             threads.append(th)
 
